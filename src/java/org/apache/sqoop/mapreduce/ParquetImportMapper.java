@@ -68,7 +68,7 @@ public abstract class ParquetImportMapper<KEYOUT, VALOUT>
     }
 
     GenericRecord record = AvroUtil.toGenericRecord(val.getFieldMap(), schema,
-        bigDecimalFormatString, bigDecimalPadding);
+        bigDecimalFormatString, bigDecimalPadding, context);
     write(context, record);
   }
 

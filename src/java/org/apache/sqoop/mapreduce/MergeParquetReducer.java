@@ -68,7 +68,7 @@ public abstract class MergeParquetReducer<KEYOUT, VALUEOUT> extends Reducer<Text
 
       if (null != bestRecord) {
         GenericRecord record = AvroUtil.toGenericRecord(bestRecord.getFieldMap(), schema,
-            bigDecimalFormatString);
+            bigDecimalFormatString, null);
         write(context, record);
       }
     }

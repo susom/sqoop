@@ -29,12 +29,16 @@ import org.apache.avro.generic.GenericFixed;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.io.DatumReader;
 import org.apache.avro.mapred.FsInput;
+import org.apache.commons.io.IOUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
 import org.apache.hadoop.io.BytesWritable;
+import org.apache.hadoop.mapreduce.Mapper.Context;
 import org.apache.sqoop.config.ConfigurationConstants;
 import org.apache.sqoop.config.ConfigurationHelper;
 import org.apache.sqoop.lib.BlobRef;
@@ -47,9 +51,11 @@ import org.apache.parquet.hadoop.metadata.ParquetMetadata;
 import org.apache.parquet.schema.MessageType;
 
 import java.io.IOException;
+import java.io.Reader;
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.sql.Date;
+import java.sql.RowId;
 import java.sql.Time;
 import java.sql.Timestamp;
 import java.util.List;
@@ -59,6 +65,8 @@ import java.util.Map;
  * The service class provides methods for creating and converting Avro objects.
  */
 public final class AvroUtil {
+
+  public static final Log LOG = LogFactory.getLog(AvroUtil.class.getName());
 
   public static final String DECIMAL = "decimal";
 
@@ -85,7 +93,7 @@ public final class AvroUtil {
     if(schemaContainingScale != null) {
       int scale = Integer.valueOf(schemaContainingScale.getObjectProp("scale").toString());
       if (bd.scale() != scale) {
-        return bd.setScale(scale);
+        return bd.setScale(scale, BigDecimal.ROUND_UP);
       }
     }
     return bd;
@@ -111,7 +119,7 @@ public final class AvroUtil {
   /**
    * Convert a Sqoop's Java representation to Avro representation.
    */
-  public static Object toAvro(Object o, Schema.Field field, boolean bigDecimalFormatString, boolean bigDecimalPaddingEnabled) {
+  public static Object toAvro(Object o, Schema.Field field, boolean bigDecimalFormatString, boolean bigDecimalPaddingEnabled, Context context) {
 
     if (o instanceof BigDecimal) {
       if(bigDecimalPaddingEnabled) {
@@ -134,6 +142,8 @@ public final class AvroUtil {
     } else if (o instanceof BytesWritable) {
       BytesWritable bw = (BytesWritable) o;
       return ByteBuffer.wrap(bw.getBytes(), 0, bw.getLength());
+    } else if (o instanceof RowId) {
+      return ByteBuffer.wrap(((RowId) o).getBytes());
     } else if (o instanceof BlobRef) {
       BlobRef br = (BlobRef) o;
       // If blob data is stored in an external .lob file, save the ref file
@@ -141,7 +151,22 @@ public final class AvroUtil {
       byte[] bytes = br.isExternal() ? br.toString().getBytes() : br.getData();
       return ByteBuffer.wrap(bytes);
     } else if (o instanceof ClobRef) {
-      throw new UnsupportedOperationException("ClobRef not supported");
+      ClobRef cr = (ClobRef) o;
+      if (!cr.isExternal()) {
+        return cr.toString();
+      }
+      if (context == null) {
+        throw new UnsupportedOperationException(
+            "need a mapper context to get an external ClobRef");
+      }
+      try {
+        Reader r = cr.getDataStream(context);
+        String ret = IOUtils.toString(r);
+        r.close();
+        return ret;
+      } catch (IOException e) {
+        throw new RuntimeException(e);
+      }
     }
     // primitive types (Integer, etc) are left unchanged
     return o;
@@ -182,20 +207,20 @@ public final class AvroUtil {
   }
 
   public static GenericRecord toGenericRecord(Map<String, Object> fieldMap,
-                                              Schema schema, boolean bigDecimalFormatString) {
-    return toGenericRecord(fieldMap, schema, bigDecimalFormatString, false);
+                                              Schema schema, boolean bigDecimalFormatString, Context context) {
+    return toGenericRecord(fieldMap, schema, bigDecimalFormatString, false, context);
   }
 
   /**
    * Manipulate a GenericRecord instance.
    */
   public static GenericRecord toGenericRecord(Map<String, Object> fieldMap,
-      Schema schema, boolean bigDecimalFormatString, boolean bigDecimalPaddingEnabled) {
+      Schema schema, boolean bigDecimalFormatString, boolean bigDecimalPaddingEnabled, Context context) {
     GenericRecord record = new GenericData.Record(schema);
     for (Map.Entry<String, Object> entry : fieldMap.entrySet()) {
       String avroColumn = toAvroColumn(entry.getKey());
       Schema.Field field = schema.getField(avroColumn);
-      Object avroObject = toAvro(entry.getValue(), field, bigDecimalFormatString, bigDecimalPaddingEnabled);
+      Object avroObject = toAvro(entry.getValue(), field, bigDecimalFormatString, bigDecimalPaddingEnabled, context);
       record.put(avroColumn, avroObject);
     }
     return record;
@@ -311,7 +336,12 @@ public final class AvroUtil {
    * @return an avro decimal type, that can be added as a column type in the avro schema generation
    */
   public static LogicalType createDecimalType(Integer precision, Integer scale, Configuration conf) {
-    if (precision == null || precision <= 0) {
+    Integer configuredMaxScale = ConfigurationHelper.getIntegerConfigIfExists(conf, ConfigurationConstants.PROP_AVRO_MAXIMUM_SCALE);
+    if (configuredMaxScale != null && scale > configuredMaxScale && precision <= 38) {
+      scale = configuredMaxScale;
+    }
+    if (precision == null || precision <= 0 || scale == -127) {
+      LOG.warn(String.format("INVALID precision %d and scale %d", precision, scale));
       // we check if the user configured default precision and scale and use these values instead of invalid ones.
       Integer configuredPrecision = ConfigurationHelper.getIntegerConfigIfExists(conf, ConfigurationConstants.PROP_AVRO_DECIMAL_PRECISION);
       if (configuredPrecision != null) {
@@ -325,7 +355,11 @@ public final class AvroUtil {
         scale = configuredScale;
       }
     }
-
+    // Make sure final precision isn't larger than maximum allowed
+    Integer configuredMaxPrecision = ConfigurationHelper.getIntegerConfigIfExists(conf, ConfigurationConstants.PROP_AVRO_MAXIMUM_PRECISION);
+    if (configuredMaxPrecision != null && precision > configuredMaxPrecision && scale == 0) {
+      precision = configuredMaxPrecision;
+    }
     return LogicalTypes.decimal(precision, scale);
   }
   private static Path getFileToTest(Path path, Configuration conf) throws IOException {
