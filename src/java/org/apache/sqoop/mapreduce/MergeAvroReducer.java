@@ -43,7 +43,7 @@ public class MergeAvroReducer extends MergeReducerBase<AvroWrapper<GenericRecord
   protected void writeRecord(SqoopRecord record, Context context)
       throws IOException, InterruptedException {
     GenericRecord outKey = AvroUtil.toGenericRecord(record.getFieldMap(), schema,
-        bigDecimalFormatString);
+        bigDecimalFormatString, null);
     wrapper.datum(outKey);
     context.write(wrapper, NullWritable.get());
   }
