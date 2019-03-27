@@ -70,7 +70,7 @@ public class AvroImportMapper
       throw new IOException(sqlE);
     }
 
-    GenericRecord outKey = AvroUtil.toGenericRecord(val.getFieldMap(), schema, bigDecimalFormatString, bigDecimalPadding);
+    GenericRecord outKey = AvroUtil.toGenericRecord(val.getFieldMap(), schema, bigDecimalFormatString, bigDecimalPadding, context);
     wrapper.datum(outKey);
     context.write(wrapper, NullWritable.get());
   }

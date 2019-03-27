@@ -18,29 +18,27 @@
 
 package org.apache.sqoop.orm;
 
+import static org.apache.sqoop.SqoopOptions.FileLayout.AvroDataFile;
+import static org.apache.sqoop.SqoopOptions.FileLayout.ParquetFile;
+
 import java.io.IOException;
 import java.sql.Types;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
-
 import org.apache.avro.LogicalType;
+import org.apache.avro.LogicalTypes;
 import org.apache.avro.Schema;
 import org.apache.avro.Schema.Field;
 import org.apache.avro.Schema.Type;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-
 import org.apache.sqoop.SqoopOptions;
-import org.apache.sqoop.manager.ConnManager;
 import org.apache.sqoop.avro.AvroUtil;
-
 import org.apache.sqoop.config.ConfigurationConstants;
+import org.apache.sqoop.manager.ConnManager;
 import org.codehaus.jackson.node.NullNode;
-
-import static org.apache.sqoop.SqoopOptions.FileLayout.AvroDataFile;
-import static org.apache.sqoop.SqoopOptions.FileLayout.ParquetFile;
 
 /**
  * Creates an Avro schema to represent a table from a database.
@@ -129,27 +127,51 @@ public class AvroSchemaGenerator {
   public Schema toAvroSchema(int sqlType, String columnName, Integer precision, Integer scale) {
     List<Schema> childSchemas = new ArrayList<Schema>();
     childSchemas.add(Schema.create(Schema.Type.NULL));
-    if (isLogicalTypeConversionEnabled() && isLogicalType(sqlType)) {
-      childSchemas.add(
-          toAvroLogicalType(columnName, sqlType, precision, scale)
-              .addToSchema(Schema.create(Type.BYTES))
-      );
-    } else {
-      childSchemas.add(Schema.create(toAvroType(columnName, sqlType)));
+    Properties mapping = options.getMapColumnJava();
+    switch (sqlType) {
+      case Types.DECIMAL:
+      case Types.NUMERIC:
+        if (isLogicalTypeDecimalConversionEnabled() && !mapping.containsKey(columnName)) {
+          childSchemas.add(toAvroLogicalType(columnName, sqlType, precision, scale)
+              .addToSchema(Schema.create(Type.BYTES)));
+        } else {
+          childSchemas.add(Schema.create(toAvroType(columnName, sqlType)));
+        }
+        break;
+      case Types.TIMESTAMP:
+        if (isLogicalTypeTimestampConversionEnabled()) {
+          childSchemas.add(LogicalTypes.timestampMillis().addToSchema(Schema.create(Type.LONG)));
+        } else {
+          childSchemas.add(Schema.create(toAvroType(columnName, sqlType)));
+        }
+        break;
+      default:
+        childSchemas.add(Schema.create(toAvroType(columnName, sqlType)));
+        break;
     }
     return Schema.createUnion(childSchemas);
   }
 
   /**
-   * @return True if this is a parquet import and parquet logical types are enabled,
-   * or if this is an avro import and avro logical types are enabled. False otherwise.
+   * @return True if this is a parquet import and parquet decimal logical types are enabled,
+   * or if this is an avro import and avro decimal logical types are enabled. False otherwise.
    */
-  private boolean isLogicalTypeConversionEnabled() {
+  private boolean isLogicalTypeDecimalConversionEnabled() {
     if (ParquetFile.equals(options.getFileLayout())) {
       return options.getConf().getBoolean(ConfigurationConstants.PROP_ENABLE_PARQUET_LOGICAL_TYPE_DECIMAL, false);
     }
     else if (AvroDataFile.equals(options.getFileLayout())) {
       return options.getConf().getBoolean(ConfigurationConstants.PROP_ENABLE_AVRO_LOGICAL_TYPE_DECIMAL, false);
+    }
+    return false;
+  }
+
+  /**
+   * @return True if this is an avro import and avro timestamp logical types are enabled. False otherwise.
+   */
+  private boolean isLogicalTypeTimestampConversionEnabled() {
+    if (AvroDataFile.equals(options.getFileLayout())) {
+      return options.getConf().getBoolean(ConfigurationConstants.PROP_ENABLE_AVRO_LOGICAL_TYPE_TIMESTAMP, false);
     }
     return false;
   }
@@ -186,13 +208,4 @@ public class AvroSchemaGenerator {
     return connManager.toAvroLogicalType(tableName, columnName, sqlType, precision, scale);
   }
 
-  private static boolean isLogicalType(int sqlType) {
-    switch(sqlType) {
-      case Types.DECIMAL:
-      case Types.NUMERIC:
-        return true;
-      default:
-        return false;
-    }
-  }
 }

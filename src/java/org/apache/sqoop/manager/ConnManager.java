@@ -212,6 +212,8 @@ public abstract class ConnManager {
     case Types.NVARCHAR:
     case Types.NCHAR:
       return Type.STRING;
+    case Types.CLOB:
+      return Type.STRING;
     case Types.DATE:
     case Types.TIME:
     case Types.TIMESTAMP:
@@ -220,6 +222,8 @@ public abstract class ConnManager {
     case Types.BINARY:
     case Types.VARBINARY:
     case Types.LONGVARBINARY:
+      return Type.BYTES;
+    case Types.ROWID:
       return Type.BYTES;
     default:
       throw new IllegalArgumentException("Cannot convert SQL type "
